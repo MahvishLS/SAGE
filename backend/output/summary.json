@@ -1,0 +1,17 @@
+{
+  "total_clauses": 495,
+  "categories": {
+    "Environmental": {
+      "count": 18,
+      "percentage": 3.64
+    },
+    "Social": {
+      "count": 48,
+      "percentage": 9.7
+    },
+    "Governance": {
+      "count": 429,
+      "percentage": 86.67
+    }
+  }
+}
