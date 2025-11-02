@@ -7,6 +7,8 @@ import os
 import json
 from typing import Dict, Any, Optional
 import time
+from dotenv import load_dotenv
+import os
 
 # Import your modules
 from esg_classifier import extract_text_from_pdf, extract_clauses, classify_clauses
@@ -14,7 +16,12 @@ from esg_embedder import generate_embeddings_for_clauses
 from matcher import ESGMatcher
 from grok_report import generate_all_reports  
 
+load_dotenv()
+
 app = FastAPI(title="ESG Analysis API")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_URL = os.getenv("GROQ_API_URL")
 
 # CORS middleware
 app.add_middleware(

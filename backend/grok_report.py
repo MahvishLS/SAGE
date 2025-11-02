@@ -7,10 +7,6 @@ import requests
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-# Store API key securely - use environment variable in production
-GROQ_API_KEY = "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"
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-
 
 def generate_report_with_groq(json_data: Dict[str, Any], category: str) -> Optional[str]:
     """
