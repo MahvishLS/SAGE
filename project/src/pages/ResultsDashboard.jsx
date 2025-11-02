@@ -2,12 +2,14 @@ import { motion } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { Loader2, Download, FileText, AlertTriangle, CheckCircle, XCircle, Home } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 const ResultsDashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [esgData, setEsgData] = useState(null);
   const [gapAnalysis, setGapAnalysis] = useState([]);
+  const [completeGapAnalysis, setCompleteGapAnalysis] = useState([]);
   const [loading, setLoading] = useState(true);
   const [metadata, setMetadata] = useState(null);
 
@@ -84,8 +86,11 @@ const ResultsDashboard = () => {
       setEsgData(formattedEsgData);
 
       // Transform data for Gap Analysis
-      const formattedGapAnalysis = extractGapAnalysis(detailedResults);
-      setGapAnalysis(formattedGapAnalysis);
+      const allGaps = extractGapAnalysis(detailedResults);
+      const displayGaps = allGaps.slice(0, 7); // Show only first 7
+
+      setCompleteGapAnalysis(allGaps);
+      setGapAnalysis(displayGaps);
 
     } catch (error) {
       console.error('Error loading analysis results:', error);
@@ -130,59 +135,58 @@ const ResultsDashboard = () => {
   };
 
   const extractGapAnalysis = (detailedResults) => {
-    const gaps = [];
-    let gapId = 1;
+    const categories = ['environmental', 'social', 'governance'];
+    let allRows = [];
 
-    // Process each category
-    ['environmental', 'social', 'governance'].forEach(category => {
-      const categoryData = detailedResults[category];
-      if (!categoryData || !categoryData.gap_analysis) return;
+    categories.forEach(category => {
+      const catData = detailedResults[category];
+      if (!catData || !catData.gap_analysis) return;
 
-      const gapData = categoryData.gap_analysis;
+      const metadata = catData.metadata || {};
+      const regMatches = catData.regulation_to_disclosure_matches || [];
 
-      // Add uncovered regulations
-      gapData.uncovered_regulations?.slice(0, 3).forEach(reg => {
-        gaps.push({
-          id: (gapId++).toString(),
-          gap: truncateText(reg.regulation_text, 60),
-          expectation: `${categoryData.metadata.regulation_id} requirement - Coverage score: ${reg.best_match_score}`,
-          status: 'missing',
-          category: category,
-          score: reg.best_match_score
-        });
+      // Map each regulation_id to its text + best disclosure
+      const regMap = {};
+      regMatches.forEach(r => {
+        regMap[r.regulation_id] = {
+          text: r.regulation_text,
+          disclosureText: r.matched_disclosures?.[0]?.disclosure_text || 'No matching disclosure found',
+          disclosureId: r.matched_disclosures?.[0]?.disclosure_id || 'N/A',
+          score: r.best_match_score ? (r.best_match_score * 100).toFixed(1) : 'N/A'
+        };
       });
 
-      // Add partially covered regulations
-      gapData.partially_covered_regulations?.slice(0, 2).forEach(reg => {
-        gaps.push({
-          id: (gapId++).toString(),
-          gap: truncateText(reg.regulation_text, 60),
-          expectation: `${categoryData.metadata.regulation_id} requirement - Coverage score: ${reg.best_match_score}`,
-          status: 'partial',
-          category: category,
-          score: reg.best_match_score
-        });
-      });
+      // Utility to build each Excel row
+      const makeRow = (regObj, status) => {
+        const regId = regObj.regulation_id || 'N/A';
+        const match = regMap[regId] || {};
 
-      // Add some covered regulations for balance
-      gapData.covered_regulations?.slice(0, 1).forEach(reg => {
-        gaps.push({
-          id: (gapId++).toString(),
-          gap: truncateText(reg.regulation_text, 60),
-          expectation: `${categoryData.metadata.regulation_id} requirement - Coverage score: ${reg.best_match_score}`,
-          status: 'complete',
-          category: category,
-          score: reg.best_match_score
-        });
-      });
+        return {
+          category: metadata.category || category,
+          status,
+          regulationId: regId,
+          frameworkText: match.text || regObj.regulation_text || 'N/A',
+          disclosureId: match.disclosureId || 'N/A',
+          disclosureText: match.disclosureText || 'No matching disclosure found',
+          regulationName: metadata.regulation_id || 'BRSR',
+          coverageScore: match.score || 'N/A'
+        };
+      };
+
+      const gap = catData.gap_analysis;
+
+      const missing = (gap.uncovered_regulations || []).map(r => makeRow(r, 'MISSING'));
+      const partial = (gap.partially_covered_regulations || []).map(r => makeRow(r, 'PARTIAL'));
+      const covered = (gap.covered_regulations || []).map(r => makeRow(r, 'COVERED'));
+
+      allRows = [...allRows, ...missing, ...partial, ...covered];
     });
 
-    // Sort by status priority and limit to top 10
-    const statusPriority = { missing: 1, partial: 2, complete: 3 };
-    return gaps
-      .sort((a, b) => statusPriority[a.status] - statusPriority[b.status])
-      .slice(0, 10);
+    return allRows;
   };
+
+
+
 
   const truncateText = (text, maxLength) => {
     if (!text) return 'No text available';
@@ -214,6 +218,69 @@ const ResultsDashboard = () => {
       default:
         return 'bg-slate-50 border-slate-300';
     }
+  };
+
+  const downloadExcel = () => {
+    if (completeGapAnalysis.length === 0) {
+      alert('No gap analysis data available to download');
+      return;
+    }
+
+    const excelData = completeGapAnalysis.map((item, index) => ({
+      key: index,
+      'S.No': index + 1,
+      'Category': item.category,
+      'Status': item.status?.toUpperCase() || 'N/A',
+      'Regulation Clause ID': item.regulationId || 'N/A',
+      'Framework Requirement Text': item.frameworkText || 'N/A',
+      'Disclosure Clause ID': item.disclosureId || 'N/A',
+      'Company Disclosure Text': item.disclosureText || 'N/A',
+      'Regulation Name': item.regulationName || metadata?.regulationId || 'N/A',
+      'Coverage Score (%)': item.coverageScore || 'N/A'
+    }));
+
+
+    // Create worksheet
+    const ws = XLSX.utils.json_to_sheet(excelData);
+
+    // Set column widths
+    ws['!cols'] = [
+      { wch: 6 },   // S.No
+      { wch: 15 },  // Category
+      { wch: 12 },  // Status
+      { wch: 20 },  // Regulation Clause ID
+      { wch: 50 },  // Framework Requirement Text
+      { wch: 20 },  // Disclosure Clause ID
+      { wch: 50 },  // Company Disclosure Text
+      { wch: 15 },  // Regulation Name
+      { wch: 18 },  // Coverage Score
+      { wch: 12 }   // Match Score
+    ];
+
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Gap Analysis');
+
+    // Add summary sheet
+    const summaryData = [
+      { 'Metric': 'Company Name', 'Value': metadata?.companyName || 'N/A' },
+      { 'Metric': 'Report Year', 'Value': metadata?.reportYear || 'N/A' },
+      { 'Metric': 'Regulation', 'Value': metadata?.regulationId || 'N/A' },
+      { 'Metric': 'Total Regulations Analyzed', 'Value': completeGapAnalysis.length },
+      { 'Metric': 'Missing Coverage', 'Value': completeGapAnalysis.filter(g => g.status === 'missing').length },
+      { 'Metric': 'Partial Coverage', 'Value': completeGapAnalysis.filter(g => g.status === 'partial').length },
+      { 'Metric': 'Complete Coverage', 'Value': completeGapAnalysis.filter(g => g.status === 'complete').length }
+    ];
+
+    const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+    wsSummary['!cols'] = [{ wch: 30 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+
+    // Generate filename
+    const filename = `Gap_Analysis_${metadata?.companyName || 'Report'}_${metadata?.reportYear || new Date().getFullYear()}.xlsx`;
+
+    // Download
+    XLSX.writeFile(wb, filename);
   };
 
   if (loading) {
@@ -335,49 +402,85 @@ const ResultsDashboard = () => {
           transition={{ delay: 0.4 }}
           className="bg-white rounded-3xl shadow-2xl p-8 mb-8"
         >
-          <h2 className="text-2xl font-bold text-slate-800 mb-6">Gap Analysis</h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-slate-800">Gap Analysis</h2>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={downloadExcel}
+              className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 text-white font-semibold rounded-full shadow-md hover:shadow-lg transition-all duration-300 flex items-center space-x-2"
+            >
+              <Download className="w-4 h-4" />
+              <span>Download Full Report</span>
+            </motion.button>
+          </div>
           {gapAnalysis.length === 0 ? (
             <div className="text-center py-8">
               <CheckCircle className="w-12 h-12 text-emerald-600 mx-auto mb-3" />
               <p className="text-slate-600">No significant gaps identified</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              {gapAnalysis.map((item, index) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.5 + index * 0.1 }}
-                  className={`${getStatusColor(item.status)} border-2 rounded-xl p-6 hover:shadow-lg transition-shadow duration-300`}
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center space-x-3">
-                      {getStatusIcon(item.status)}
-                      <h3 className="font-bold text-slate-800">{item.gap}</h3>
+            <>
+              <div className="space-y-4">
+                {gapAnalysis.map((item, index) => (
+                  <motion.div
+                    key={index}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.5 + index * 0.1 }}
+                    className={`${getStatusColor(item.status)} border-2 rounded-xl p-6 hover:shadow-lg transition-shadow duration-300`}
+                  >
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center space-x-3">
+                        {getStatusIcon(item.status)}
+                        <h3 className="font-bold text-slate-800">{item.frameworkText || item.frameworkTextShort}</h3>
+                      </div>
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${item.status === 'complete' ? 'bg-emerald-100 text-emerald-700' :
+                        item.status === 'partial' ? 'bg-amber-100 text-amber-700' :
+                          'bg-red-100 text-red-700'
+                        }`}>
+                        {item.status.toUpperCase()}
+                      </span>
                     </div>
-                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                      item.status === 'complete' ? 'bg-emerald-100 text-emerald-700' :
-                      item.status === 'partial' ? 'bg-amber-100 text-amber-700' :
-                      'bg-red-100 text-red-700'
-                    }`}>
-                      {item.status.toUpperCase()}
-                    </span>
-                  </div>
-                  <div className="pl-8">
-                    <p className="text-sm text-slate-600 mb-2">
-                      <span className="font-semibold">Regulatory Expectation:</span>
-                    </p>
-                    <p className="text-sm text-slate-700">{item.expectation}</p>
-                    {item.score !== undefined && (
-                      <p className="text-xs text-slate-500 mt-2">
-                        Match score: {(item.score * 100).toFixed(1)}%
-                      </p>
-                    )}
-                  </div>
-                </motion.div>
-              ))}
-            </div>
+                    <div className="space-y-3 pl-8">
+                      {/* <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase mb-1">
+                          Framework Requirement:
+                        </p>
+                        <p className="text-sm text-slate-700 bg-white/50 p-2 rounded">
+                          {item.frameworkText || item.frameworkTextShort}
+                        </p>
+                      </div> */}
+                      <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase mb-1">
+                          Company Disclosure:
+                        </p>
+                        <p className="text-sm text-slate-700 bg-white/50 p-2 rounded">
+                          {item.disclosureText || item.disclosureTextShort}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-slate-500 pt-2">
+                        <span>Regulation: <strong>{item.regulationName}</strong></span>
+                        {item.score !== undefined && (
+                          <span>Match score: <strong>{(item.score * 100).toFixed(1)}%</strong></span>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-slate-400 pt-1">
+                        <span>Clause ID: <strong>{item.regulationId}</strong></span>
+                        <span>Disclosure ID: <strong>{item.disclosureId}</strong></span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+              {completeGapAnalysis.length > 7 && (
+                <div className="mt-6 text-center">
+                  <p className="text-sm text-slate-600">
+                    Showing 7 of {completeGapAnalysis.length} regulations. Download the full report for complete analysis.
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </motion.div>
 
