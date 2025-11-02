@@ -92,7 +92,7 @@ const UploadReports = () => {
           }
           return prev + 10;
         });
-      }, 500);
+      }, 5000);
 
       const response = await fetch("http://127.0.0.1:8000/upload/disclosure", {
         method: "POST",

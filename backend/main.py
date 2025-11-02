@@ -12,6 +12,7 @@ import time
 from esg_classifier import extract_text_from_pdf, extract_clauses, classify_clauses
 from esg_embedder import generate_embeddings_for_clauses
 from matcher import ESGMatcher
+from grok_report import generate_all_reports  
 
 app = FastAPI(title="ESG Analysis API")
 
@@ -163,6 +164,7 @@ async def root():
             "upload_disclosure": "/upload/disclosure",
             "upload_framework": "/upload/framework",
             "perform_matching": "/match",
+            "generate_report": "/generate-report",
             "get_status": "/status",
             "reset": "/reset"
         }
@@ -493,6 +495,116 @@ async def perform_esg_matching():
             detail=f"Matching failed: {str(e)}"
         )
 
+
+@app.post("/generate-report")
+async def generate_compliance_report():
+    """
+    API 4: Generate AI-powered compliance reports
+    
+    Requirements:
+    - Matching must be complete (matching results must exist)
+    
+    Process:
+    1. Loads matching results from matching_output/
+    2. Sends data to Groq AI for each category
+    3. Generates comprehensive markdown reports
+    4. Returns reports with metadata
+    
+    Returns:
+        AI-generated reports for E/S/G categories with summary statistics
+    """
+    # Check if matching output exists
+    matching_files_exist = all([
+        (MATCHING_OUTPUT_DIR / f"matching_{cat}.json").exists()
+        for cat in ["environmental", "social", "governance"]
+    ])
+    
+    if not matching_files_exist:
+        raise HTTPException(
+            status_code=400,
+            detail="Matching results not found. Please run /match first."
+        )
+    
+    try:
+        print("\n" + "="*70)
+        print("GENERATING AI-POWERED COMPLIANCE REPORTS")
+        print("="*70)
+        
+        # Generate reports using Groq AI
+        report_data = generate_all_reports(MATCHING_OUTPUT_DIR)
+        
+        if not report_data["reports"]:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate any reports. Check Groq API connectivity."
+            )
+        
+        # Calculate overall compliance score (weighted average of categories)
+        reports = report_data["reports"]
+        category_coverages = [
+            reports[cat]["coverage_percentage"]
+            for cat in reports.keys()
+        ]
+        overall_score = sum(category_coverages) / len(category_coverages) if category_coverages else 0
+        
+        # Extract key missing areas and recommendations from reports
+        key_missing_areas = []
+        suggested_actions = []
+        
+        for category, data in reports.items():
+            report_text = data["report_markdown"]
+            
+            # Extract gap analysis section (simple text parsing)
+            if "Gap Analysis" in report_text or "uncovered" in report_text.lower():
+                lines = report_text.split('\n')
+                for i, line in enumerate(lines):
+                    if "uncovered" in line.lower() or "missing" in line.lower():
+                        if line.strip() and not line.startswith('#'):
+                            key_missing_areas.append(line.strip('- •*'))
+                            if len(key_missing_areas) >= 5:
+                                break
+            
+            # Extract recommendations
+            if "Recommendation" in report_text:
+                lines = report_text.split('\n')
+                in_recommendations = False
+                for line in lines:
+                    if "Recommendation" in line:
+                        in_recommendations = True
+                        continue
+                    if in_recommendations and (line.startswith('-') or line.startswith('*') or line.startswith('•')):
+                        suggested_actions.append(line.strip('- •*'))
+                        if len(suggested_actions) >= 7:
+                            break
+        
+        print(f"\n✓ Generated {len(reports)} category reports")
+        print(f"✓ Overall compliance score: {overall_score:.1f}%")
+        print("="*70 + "\n")
+        
+        return JSONResponse({
+            "success": True,
+            "message": "Compliance reports generated successfully",
+            "overall_compliance_score": round(overall_score, 1),
+            "reports": reports,
+            "summary": {
+                "total_categories": len(reports),
+                "average_coverage": round(overall_score, 1),
+                "reports_generated": report_data["summary"]["successful"]
+            },
+            "key_missing_areas": key_missing_areas[:5],
+            "suggested_actions": suggested_actions[:7],
+            "generation_details": report_data["details"]
+        })
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Report generation failed: {error_trace}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Report generation failed: {str(e)}"
+        )
+    
 
 @app.get("/status")
 async def get_status():
